@@ -106,6 +106,11 @@ def _tool_result_summary(result: ToolResult) -> str:
         "created",
         "replacements",
         "matches",
+        "exit_code",
+        "timed_out",
+        "duration_ms",
+        "stdout_chars",
+        "stderr_chars",
         "total_lines",
         "truncated",
     ):

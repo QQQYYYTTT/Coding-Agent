@@ -67,6 +67,29 @@ class VerboseTraceTests(unittest.TestCase):
         self.assertIn("27 characters omitted", rendered)
         self.assertNotIn("must-not-appear", rendered)
 
+    def test_command_credentials_are_redacted_from_trace(self) -> None:
+        event = AgentTraceEvent(
+            kind=AgentTraceKind.TOOL_START,
+            model_turn=1,
+            tool_name="run_command",
+            arguments={
+                "argv": [
+                    "python",
+                    "script.py",
+                    "--api-key",
+                    "must-not-appear",
+                    "--token=also-must-not-appear",
+                ]
+            },
+        )
+
+        rendered = format_trace_event(event)
+
+        self.assertIn('"python"', rendered)
+        self.assertIn("<redacted>", rendered)
+        self.assertNotIn("must-not-appear", rendered)
+        self.assertNotIn("also-must-not-appear", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

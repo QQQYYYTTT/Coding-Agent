@@ -16,6 +16,7 @@
 - 受工作目录限制、支持行范围和输出截断的 `ReadFileTool`；
 - 只允许创建新文件、禁止覆盖的 `WriteFileTool`；
 - 仅在旧文本恰好出现一次时执行原子更新的 `ReplaceTextTool`；
+- 固定工作目录、限制命令、支持超时和有界双流输出的 `RunCommandTool`；
 - `AgentRunner` 模型—工具—模型循环、最大轮数和调用 ID 检查；
 - 支持 `--workspace` 的最小 Agent CLI。
 

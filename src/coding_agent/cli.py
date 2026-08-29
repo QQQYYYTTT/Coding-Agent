@@ -24,6 +24,7 @@ from coding_agent.tools.filesystem import (
     WriteFileTool,
 )
 from coding_agent.tools.registry import ToolRegistry
+from coding_agent.tools.shell import RunCommandTool
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -32,6 +33,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "Use list_files to discover unknown paths and read_file to inspect relevant text. "
     "Use write_file only to create a new file. Use replace_text for precise edits "
     "after reading the target file; old_text must identify exactly one occurrence. "
+    "Use run_command to run tests after code changes; pass an argv array and inspect "
+    "its exit code, stdout, and stderr before claiming success. "
     "Never claim to have observed the workspace without calling a tool. Paths passed "
     "to tools must be relative to the workspace. After receiving tool results, answer "
     "the user directly and concisely."
@@ -55,6 +58,39 @@ def _is_sensitive_name(name: str) -> bool:
     return any(part in normalized for part in _SENSITIVE_ARGUMENT_PARTS)
 
 
+def _sanitize_argv(value: Sequence[Any]) -> list[Any]:
+    """Keep commands inspectable while redacting credential-shaped arguments."""
+
+    sanitized: list[Any] = []
+    redact_next = False
+    for argument in list(value)[:64]:
+        if not isinstance(argument, str):
+            sanitized.append(f"<{type(argument).__name__}>")
+            redact_next = False
+            continue
+        if redact_next:
+            sanitized.append("<redacted>")
+            redact_next = False
+            continue
+
+        flag, separator, _ = argument.partition("=")
+        if _is_sensitive_name(flag):
+            if separator:
+                sanitized.append(f"{flag}=<redacted>")
+            else:
+                sanitized.append(argument[:80])
+                redact_next = True
+            continue
+        lowered = argument.casefold()
+        if lowered.startswith("sk-") or lowered.startswith("bearer "):
+            sanitized.append("<redacted>")
+            continue
+        sanitized.append(argument if len(argument) <= 160 else argument[:157] + "...")
+    if len(value) > 64:
+        sanitized.append("<additional arguments omitted>")
+    return sanitized
+
+
 def _sanitize_trace_value(
     value: Any,
     *,
@@ -67,6 +103,8 @@ def _sanitize_trace_value(
         return "<redacted>"
     if name in _CONTENT_ARGUMENT_NAMES and isinstance(value, str):
         return f"<{len(value)} characters omitted>"
+    if name == "argv" and isinstance(value, (list, tuple)):
+        return _sanitize_argv(value)
     if depth >= 4:
         return "<nested value omitted>"
     if isinstance(value, Mapping):
@@ -182,6 +220,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 WriteFileTool(args.workspace),
                 ReplaceTextTool(args.workspace),
+                RunCommandTool(
+                    args.workspace,
+                    max_output_chars=config.max_tool_output,
+                ),
             ]
         )
         runner = AgentRunner(

@@ -8,11 +8,13 @@ from coding_agent.tools.filesystem import (
     WriteFileTool,
 )
 from coding_agent.tools.registry import ToolRegistrationError, ToolRegistry
+from coding_agent.tools.shell import RunCommandTool
 
 __all__ = [
     "ListFilesTool",
     "ReadFileTool",
     "ReplaceTextTool",
+    "RunCommandTool",
     "Tool",
     "ToolRegistrationError",
     "ToolRegistry",
