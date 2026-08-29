@@ -1,7 +1,10 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from coding_agent.agent import AgentTraceEvent, AgentTraceKind
-from coding_agent.cli import build_parser, format_trace_event
+from coding_agent.cli import build_parser, build_tool_registry, format_trace_event
+from coding_agent.config import AppConfig
 
 
 class VerboseTraceTests(unittest.TestCase):
@@ -89,6 +92,31 @@ class VerboseTraceTests(unittest.TestCase):
         self.assertIn("<redacted>", rendered)
         self.assertNotIn("must-not-appear", rendered)
         self.assertNotIn("also-must-not-appear", rendered)
+
+
+class ToolRegistryWiringTests(unittest.TestCase):
+    def test_command_timeout_config_sets_default_and_maximum(self) -> None:
+        config = AppConfig(
+            api_key="test-key",
+            base_url="https://api.example/v1",
+            model="test-model",
+            command_timeout=7,
+        )
+        with TemporaryDirectory() as directory:
+            registry = build_tool_registry(Path(directory), config)
+            tool = registry.get("run_command")
+            assert tool is not None
+
+            result = tool.execute(
+                {
+                    "argv": ["python", "-m", "unittest"],
+                    "timeout_seconds": 8,
+                }
+            )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.metadata["kind"], "invalid_arguments")
+        self.assertIn("1 to 7", result.error or "")
 
 
 if __name__ == "__main__":

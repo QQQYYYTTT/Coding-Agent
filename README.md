@@ -32,7 +32,10 @@
 MODEL_API_KEY=你的真实API Key
 MODEL_BASE_URL=https://api.openai.com/v1
 MODEL_NAME=你的账户可用的模型ID
+COMMAND_TIMEOUT=60
 ```
+
+`COMMAND_TIMEOUT` 必须是 1～60 的整数秒，同时作为单次命令的默认超时和最大超时。
 
 `.env` 已被 `.gitignore` 排除，不应提交到仓库。`.env.example` 只保存变量名和示例值，可以安全提交。
 

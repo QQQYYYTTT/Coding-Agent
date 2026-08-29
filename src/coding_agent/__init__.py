@@ -11,8 +11,14 @@ from coding_agent.agent import (
 from coding_agent.config import AppConfig, ConfigurationError
 from coding_agent.messages import Message, MessageRole, ToolCall
 from coding_agent.tools.base import Tool, ToolResult
-from coding_agent.tools.filesystem import ListFilesTool, ReadFileTool
+from coding_agent.tools.filesystem import (
+    ListFilesTool,
+    ReadFileTool,
+    ReplaceTextTool,
+    WriteFileTool,
+)
 from coding_agent.tools.registry import ToolRegistrationError, ToolRegistry
+from coding_agent.tools.shell import RunCommandTool
 
 __all__ = [
     "AgentLimitError",
@@ -27,9 +33,12 @@ __all__ = [
     "MessageRole",
     "ListFilesTool",
     "ReadFileTool",
+    "ReplaceTextTool",
+    "RunCommandTool",
     "ToolCall",
     "Tool",
     "ToolRegistrationError",
     "ToolRegistry",
     "ToolResult",
+    "WriteFileTool",
 ]

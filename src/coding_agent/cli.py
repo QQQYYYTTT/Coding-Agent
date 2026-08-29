@@ -191,6 +191,31 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_tool_registry(workspace: Path, config: AppConfig) -> ToolRegistry:
+    """Build the standard tool set from one validated runtime configuration."""
+
+    return ToolRegistry(
+        [
+            ListFilesTool(
+                workspace,
+                max_output_chars=config.max_tool_output,
+            ),
+            ReadFileTool(
+                workspace,
+                max_output_chars=config.max_tool_output,
+            ),
+            WriteFileTool(workspace),
+            ReplaceTextTool(workspace),
+            RunCommandTool(
+                workspace,
+                default_timeout_seconds=config.command_timeout,
+                max_timeout_seconds=config.command_timeout,
+                max_output_chars=config.max_tool_output,
+            ),
+        ]
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -208,24 +233,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         config = AppConfig.from_env()
         client = OpenAICompatibleClient(config)
-        registry = ToolRegistry(
-            [
-                ListFilesTool(
-                    args.workspace,
-                    max_output_chars=config.max_tool_output,
-                ),
-                ReadFileTool(
-                    args.workspace,
-                    max_output_chars=config.max_tool_output,
-                ),
-                WriteFileTool(args.workspace),
-                ReplaceTextTool(args.workspace),
-                RunCommandTool(
-                    args.workspace,
-                    max_output_chars=config.max_tool_output,
-                ),
-            ]
-        )
+        registry = build_tool_registry(args.workspace, config)
         runner = AgentRunner(
             client,
             registry,

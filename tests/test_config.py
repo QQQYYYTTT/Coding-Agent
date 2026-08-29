@@ -23,7 +23,8 @@ class AppConfigTests(unittest.TestCase):
         self.assertEqual(config.model, "example-model")
         self.assertEqual(config.request_timeout, 15.5)
         self.assertEqual(config.max_turns, 12)
-        self.assertEqual(config.command_timeout, 30.0)
+        self.assertEqual(config.command_timeout, 30)
+        self.assertIsInstance(config.command_timeout, int)
         self.assertEqual(config.max_tool_output, 4096)
 
     def test_api_key_is_not_shown_in_repr(self) -> None:
@@ -58,6 +59,18 @@ class AppConfigTests(unittest.TestCase):
                     "AGENT_MAX_TURNS": "many",
                 }
             )
+
+    def test_rejects_command_timeout_outside_supported_range(self) -> None:
+        for invalid in ("0", "61", "1.5"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(ConfigurationError, "COMMAND_TIMEOUT|command_timeout"):
+                    AppConfig.from_env(
+                        {
+                            "MODEL_API_KEY": "secret",
+                            "MODEL_NAME": "example-model",
+                            "COMMAND_TIMEOUT": invalid,
+                        }
+                    )
 
     def test_loads_dotenv_file(self) -> None:
         with TemporaryDirectory() as directory:

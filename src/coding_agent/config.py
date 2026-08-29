@@ -103,7 +103,7 @@ class AppConfig:
     model: str
     request_timeout: float = 60.0
     max_turns: int = 20
-    command_timeout: float = 60.0
+    command_timeout: int = 60
     max_tool_output: int = 20_000
 
     def __post_init__(self) -> None:
@@ -119,8 +119,12 @@ class AppConfig:
             raise ConfigurationError("request_timeout must be greater than zero")
         if self.max_turns <= 0:
             raise ConfigurationError("max_turns must be greater than zero")
-        if self.command_timeout <= 0:
-            raise ConfigurationError("command_timeout must be greater than zero")
+        if (
+            not isinstance(self.command_timeout, int)
+            or isinstance(self.command_timeout, bool)
+            or not 1 <= self.command_timeout <= 60
+        ):
+            raise ConfigurationError("command_timeout must be an integer from 1 to 60")
         if self.max_tool_output <= 0:
             raise ConfigurationError("max_tool_output must be greater than zero")
 
@@ -164,6 +168,6 @@ class AppConfig:
             model=_required(source, "MODEL_NAME"),
             request_timeout=_positive_float(source, "MODEL_TIMEOUT", 60.0),
             max_turns=_positive_int(source, "AGENT_MAX_TURNS", 20),
-            command_timeout=_positive_float(source, "COMMAND_TIMEOUT", 60.0),
+            command_timeout=_positive_int(source, "COMMAND_TIMEOUT", 60),
             max_tool_output=_positive_int(source, "MAX_TOOL_OUTPUT", 20_000),
         )
