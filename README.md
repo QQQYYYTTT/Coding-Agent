@@ -71,6 +71,15 @@ $env:PYTHONPATH = "src"
 python -m unittest discover -s tests -v
 ```
 
+## 端到端演示项目
+
+`examples/buggy_shipping` 包含一个运费分档边界 Bug 和 8 项自动测试。修复前有
+2 项测试失败，适合演示 Agent 自主查看需求、定位代码、精确修改并运行测试验证：
+
+```powershell
+python main.py --verbose --workspace examples/buggy_shipping "请检查这个项目，定位并修复 Bug，不要修改测试，最后运行完整测试验证"
+```
+
 ## 项目结构
 
 ```text
