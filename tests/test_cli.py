@@ -93,6 +93,38 @@ class VerboseTraceTests(unittest.TestCase):
         self.assertNotIn("must-not-appear", rendered)
         self.assertNotIn("also-must-not-appear", rendered)
 
+    def test_context_trim_trace_contains_counts_only(self) -> None:
+        event = AgentTraceEvent(
+            kind=AgentTraceKind.CONTEXT_TRIMMED,
+            model_turn=3,
+            omitted_messages=4,
+            context_characters=1234,
+        )
+
+        rendered = format_trace_event(event)
+
+        self.assertEqual(
+            rendered,
+            "[Turn 3] Context trimmed; affected_messages=4, "
+            "context_characters=1234",
+        )
+
+    def test_no_progress_trace_contains_counts_only(self) -> None:
+        event = AgentTraceEvent(
+            kind=AgentTraceKind.NO_PROGRESS,
+            model_turn=4,
+            repetitions=3,
+            tool_count=1,
+        )
+
+        rendered = format_trace_event(event)
+
+        self.assertEqual(
+            rendered,
+            "[Turn 4] Stopped for no progress; "
+            "repeated_tool_batches=3, tools=1",
+        )
+
 
 class ToolRegistryWiringTests(unittest.TestCase):
     def test_command_timeout_config_sets_default_and_maximum(self) -> None:

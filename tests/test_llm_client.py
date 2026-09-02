@@ -1,8 +1,11 @@
 import unittest
+from io import BytesIO
+from unittest.mock import patch
+from urllib.error import HTTPError
 
 from coding_agent.config import AppConfig
-from coding_agent.llm.base import ModelResponseError
-from coding_agent.llm.compatible import OpenAICompatibleClient
+from coding_agent.llm.base import ModelRequestError, ModelResponseError
+from coding_agent.llm.compatible import OpenAICompatibleClient, _http_post_json
 from coding_agent.messages import Message, MessageRole, ToolCall
 
 
@@ -11,8 +14,8 @@ class RecordingTransport:
         self.response = response
         self.calls: list[tuple] = []
 
-    def __call__(self, url, payload, headers, timeout):
-        self.calls.append((url, payload, headers, timeout))
+    def __call__(self, url, payload, headers, timeout, max_response_bytes):
+        self.calls.append((url, payload, headers, timeout, max_response_bytes))
         return self.response
 
 
@@ -46,13 +49,14 @@ class OpenAICompatibleClientTests(unittest.TestCase):
 
         self.assertEqual(reply.role, MessageRole.ASSISTANT)
         self.assertEqual(reply.content, "Hello from the model.")
-        url, payload, headers, timeout = transport.calls[0]
+        url, payload, headers, timeout, max_response_bytes = transport.calls[0]
         self.assertEqual(url, "https://gateway.example/v1/chat/completions")
         self.assertEqual(payload["model"], "example-model")
         self.assertEqual(payload["messages"], [{"role": "user", "content": "Hello"}])
         self.assertNotIn("tools", payload)
         self.assertEqual(headers["Authorization"], "Bearer test-secret")
         self.assertEqual(timeout, 12.0)
+        self.assertEqual(max_response_bytes, self.config.max_model_response_bytes)
 
     def test_parses_future_function_tool_calls(self) -> None:
         transport = RecordingTransport(
@@ -170,6 +174,135 @@ class OpenAICompatibleClientTests(unittest.TestCase):
         with self.assertRaisesRegex(ModelResponseError, "no choices"):
             client.complete([Message(role=MessageRole.USER, content="Hello")])
 
+    def test_retries_retryable_request_errors_with_backoff(self) -> None:
+        attempts: list[tuple] = []
+        delays: list[float] = []
+
+        def transport(*args):
+            attempts.append(args)
+            if len(attempts) <= 2:
+                raise ModelRequestError("temporary failure", retryable=True)
+            return {
+                "choices": [
+                    {"message": {"role": "assistant", "content": "Recovered."}}
+                ]
+            }
+
+        client = OpenAICompatibleClient(
+            self.config,
+            transport=transport,
+            sleeper=delays.append,
+        )
+        reply = client.complete([Message(role=MessageRole.USER, content="Hello")])
+
+        self.assertEqual(reply.content, "Recovered.")
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(delays, [0.5, 1.0])
+        self.assertEqual(attempts[0][4], self.config.max_model_response_bytes)
+
+    def test_does_not_retry_non_retryable_request_errors(self) -> None:
+        attempts = 0
+        delays: list[float] = []
+
+        def transport(*args):
+            nonlocal attempts
+            attempts += 1
+            raise ModelRequestError("bad request", retryable=False)
+
+        client = OpenAICompatibleClient(
+            self.config,
+            transport=transport,
+            sleeper=delays.append,
+        )
+
+        with self.assertRaisesRegex(ModelRequestError, "bad request"):
+            client.complete([Message(role=MessageRole.USER, content="Hello")])
+
+        self.assertEqual(attempts, 1)
+        self.assertEqual(delays, [])
+
+    def test_stops_after_configured_retry_limit(self) -> None:
+        config = AppConfig(
+            api_key="test-secret",
+            base_url="https://gateway.example/v1",
+            model="example-model",
+            max_retries=1,
+        )
+        attempts = 0
+
+        def transport(*args):
+            nonlocal attempts
+            attempts += 1
+            raise ModelRequestError("still unavailable", retryable=True)
+
+        client = OpenAICompatibleClient(
+            config,
+            transport=transport,
+            sleeper=lambda _: None,
+        )
+
+        with self.assertRaisesRegex(ModelRequestError, "still unavailable"):
+            client.complete([Message(role=MessageRole.USER, content="Hello")])
+
+        self.assertEqual(attempts, 2)
+
+    def test_http_transport_rejects_oversized_response(self) -> None:
+        class OversizedResponse:
+            requested_size = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, size):
+                self.requested_size = size
+                return b"x" * size
+
+        response = OversizedResponse()
+        with patch(
+            "coding_agent.llm.compatible.urlopen",
+            return_value=response,
+        ):
+            with self.assertRaisesRegex(ModelResponseError, "exceeded 1024 bytes"):
+                _http_post_json(
+                    "https://gateway.example/v1/chat/completions",
+                    {},
+                    {},
+                    1.0,
+                    1024,
+                )
+
+        self.assertEqual(response.requested_size, 1025)
+
+    def test_http_status_retry_classification(self) -> None:
+        statuses = (
+            (400, False), (408, True), (409, True), (429, True), (503, True)
+        )
+        for status, expected in statuses:
+            with self.subTest(status=status):
+                error = HTTPError(
+                    "https://gateway.example/v1/chat/completions",
+                    status,
+                    "provider error",
+                    {},
+                    BytesIO(b'{"error":{"message":"failed"}}'),
+                )
+                with patch(
+                    "coding_agent.llm.compatible.urlopen",
+                    side_effect=error,
+                ):
+                    with self.assertRaises(ModelRequestError) as captured:
+                        _http_post_json(
+                            "https://gateway.example/v1/chat/completions",
+                            {},
+                            {},
+                            1.0,
+                            1024,
+                        )
+
+                self.assertEqual(captured.exception.retryable, expected)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,8 +1,10 @@
 """Public types for the coding agent package."""
 
 from coding_agent.agent import (
+    AgentContextError,
     AgentLimitError,
     AgentLoopError,
+    AgentNoProgressError,
     AgentRunner,
     AgentRunResult,
     AgentTraceEvent,
@@ -21,8 +23,10 @@ from coding_agent.tools.registry import ToolRegistrationError, ToolRegistry
 from coding_agent.tools.shell import RunCommandTool
 
 __all__ = [
+    "AgentContextError",
     "AgentLimitError",
     "AgentLoopError",
+    "AgentNoProgressError",
     "AgentRunner",
     "AgentRunResult",
     "AgentTraceEvent",

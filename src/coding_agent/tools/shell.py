@@ -45,6 +45,14 @@ _SECRET_ENV_PARTS = (
     "secret",
     "token",
 )
+_GIT_CONTEXT_ENV_NAMES = {
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_WORK_TREE",
+}
 _TRUNCATION_MARKER = "\n...[truncated]"
 
 
@@ -58,16 +66,18 @@ def _is_secret_environment_name(name: str) -> bool:
     return any(part in normalized for part in _SECRET_ENV_PARTS)
 
 
-def _bounded_environment() -> dict[str, str]:
-    """Inherit normal process settings without exposing model credentials."""
+def _bounded_environment(workspace: Path) -> dict[str, str]:
+    """Inherit normal settings without credentials or external Git context."""
 
     environment = {
         name: value
         for name, value in os.environ.items()
         if not _is_secret_environment_name(name)
+        and name.upper() not in _GIT_CONTEXT_ENV_NAMES
     }
     environment["PYTHONIOENCODING"] = "utf-8"
     environment["PYTHONUTF8"] = "1"
+    environment["GIT_CEILING_DIRECTORIES"] = str(workspace)
     return environment
 
 
@@ -187,7 +197,8 @@ class RunCommandTool:
         "Run a bounded development command in the workspace to execute tests or "
         "inspect results. Pass an argv array, not a shell command string. The working "
         "directory is always the workspace; shell operators are unavailable. Allowed "
-        "commands are python test scripts/modules, pytest, ruff, mypy, and read-only git."
+        "commands are selected Python -m modules, pytest, ruff, mypy, and read-only git "
+        "when the workspace itself is a Git repository."
     )
     parameters = {
         "type": "object",
@@ -341,6 +352,12 @@ class RunCommandTool:
                     "only read-only git subcommands are allowed",
                     metadata={"kind": "command_not_allowed", "command": "git"},
                 )
+            if not (self._workspace / ".git").exists():
+                return ToolResult.fail(
+                    "git commands require the workspace itself to be a Git repository; "
+                    "parent repositories are intentionally ignored",
+                    metadata={"kind": "git_repository_not_at_workspace_root"},
+                )
         return None
 
     def _validate_python_arguments(
@@ -352,46 +369,17 @@ class RunCommandTool:
                 "interactive Python is not allowed",
                 metadata={"kind": "command_not_allowed", "command": "python"},
             )
-        if "-c" in arguments or arguments[-1] == "-":
+        if arguments[0] != "-m":
             return ToolResult.fail(
-                "inline or stdin Python execution is not allowed",
+                "direct Python scripts, inline code, and stdin execution are not allowed; "
+                "use an approved python -m module",
                 metadata={"kind": "command_not_allowed", "command": "python"},
             )
 
-        if arguments[0] == "-m":
-            if len(arguments) < 2 or arguments[1].casefold() not in _PYTHON_SAFE_MODULES:
-                return ToolResult.fail(
-                    "this Python module is not allowed",
-                    metadata={"kind": "command_not_allowed", "command": "python"},
-                )
-            return None
-
-        script_argument = next(
-            (argument for argument in arguments if not argument.startswith("-")),
-            None,
-        )
-        if script_argument is None:
+        if len(arguments) < 2 or arguments[1].casefold() not in _PYTHON_SAFE_MODULES:
             return ToolResult.fail(
-                "Python must run a workspace script or an allowed -m module",
+                "this Python module is not allowed",
                 metadata={"kind": "command_not_allowed", "command": "python"},
-            )
-        script_path = Path(script_argument)
-        if script_path.is_absolute() or script_path.suffix.casefold() != ".py":
-            return ToolResult.fail(
-                "Python scripts must be relative .py files inside the workspace",
-                metadata={"kind": "command_not_allowed", "command": "python"},
-            )
-        try:
-            resolved_script = (self._workspace / script_path).resolve(strict=True)
-        except (OSError, RuntimeError):
-            return ToolResult.fail(
-                "Python script does not exist or cannot be resolved",
-                metadata={"kind": "not_found", "path": script_path.as_posix()},
-            )
-        if not resolved_script.is_relative_to(self._workspace) or not resolved_script.is_file():
-            return ToolResult.fail(
-                "Python script must stay inside the workspace",
-                metadata={"kind": "path_outside_workspace"},
             )
         return None
 
@@ -434,7 +422,7 @@ class RunCommandTool:
             process = subprocess.Popen(
                 argv,
                 cwd=self._workspace,
-                env=_bounded_environment(),
+                env=_bounded_environment(self._workspace),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

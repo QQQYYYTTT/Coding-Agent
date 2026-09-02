@@ -4,13 +4,16 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from coding_agent.agent import (
+    AgentContextError,
     AgentLimitError,
     AgentLoopError,
+    AgentNoProgressError,
     AgentRunner,
     AgentTraceKind,
 )
 from coding_agent.messages import Message, MessageRole, ToolCall
 from coding_agent.tools.filesystem import ListFilesTool, ReadFileTool
+from coding_agent.tools.base import ToolResult
 from coding_agent.tools.registry import ToolRegistry
 
 
@@ -24,6 +27,22 @@ class ScriptedClient:
         if not self.responses:
             raise AssertionError("scripted client ran out of responses")
         return self.responses.pop(0)
+
+
+class ChangingResultTool:
+    name = "changing_result"
+    description = "Return a different deterministic value on each call."
+    parameters = {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    }
+
+    def __init__(self, outputs: list[str]) -> None:
+        self.outputs = list(outputs)
+
+    def execute(self, arguments) -> ToolResult:
+        return ToolResult.ok(self.outputs.pop(0))
 
 
 class AgentRunnerTests(unittest.TestCase):
@@ -267,6 +286,70 @@ class AgentRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentLoopError, "reused tool call id"):
             AgentRunner(client, self.registry).run("Read repeatedly")
 
+    def test_stops_after_identical_tool_batches_make_no_progress(self) -> None:
+        (self.workspace / "loop.txt").write_text("unchanged", encoding="utf-8")
+        client = ScriptedClient(
+            [
+                Message(
+                    role=MessageRole.ASSISTANT,
+                    tool_calls=(
+                        ToolCall(
+                            id=f"call-{index}",
+                            name="read_file",
+                            arguments={"path": "loop.txt"},
+                        ),
+                    ),
+                )
+                for index in range(1, 4)
+            ]
+        )
+        events = []
+        runner = AgentRunner(
+            client,
+            self.registry,
+            max_no_progress_turns=3,
+            trace_sink=events.append,
+        )
+
+        with self.assertRaises(AgentNoProgressError) as captured:
+            runner.run("Keep reading the same file")
+
+        self.assertEqual(captured.exception.repetitions, 3)
+        self.assertEqual(captured.exception.tool_names, ("read_file",))
+        self.assertEqual(len(captured.exception.history), 7)
+        self.assertEqual(len(client.calls), 3)
+        self.assertEqual(events[-1].kind, AgentTraceKind.NO_PROGRESS)
+        self.assertEqual(events[-1].repetitions, 3)
+
+    def test_same_tool_and_arguments_can_repeat_when_result_changes(self) -> None:
+        tool = ChangingResultTool(["one", "two", "three"])
+        registry = ToolRegistry([tool])
+        client = ScriptedClient(
+            [
+                Message(
+                    role=MessageRole.ASSISTANT,
+                    tool_calls=(
+                        ToolCall(
+                            id=f"changing-{index}",
+                            name="changing_result",
+                            arguments={},
+                        ),
+                    ),
+                )
+                for index in range(1, 4)
+            ]
+            + [Message(role=MessageRole.ASSISTANT, content="Observed changes.")]
+        )
+
+        result = AgentRunner(
+            client,
+            registry,
+            max_no_progress_turns=2,
+        ).run("Observe changing results")
+
+        self.assertEqual(result.output, "Observed changes.")
+        self.assertEqual(result.tool_calls, 3)
+
     def test_rejects_non_assistant_model_message(self) -> None:
         client = ScriptedClient([Message(role=MessageRole.USER, content="wrong role")])
 
@@ -282,6 +365,141 @@ class AgentRunnerTests(unittest.TestCase):
     def test_rejects_invalid_turn_limit(self) -> None:
         with self.assertRaisesRegex(ValueError, "greater than zero"):
             AgentRunner(ScriptedClient([]), self.registry, max_turns=0)
+
+    def test_trims_old_complete_tool_exchanges_but_keeps_full_audit_history(self) -> None:
+        (self.workspace / "a.txt").write_text("A" * 850, encoding="utf-8")
+        (self.workspace / "b.txt").write_text("B" * 850, encoding="utf-8")
+        client = ScriptedClient(
+            [
+                Message(
+                    role=MessageRole.ASSISTANT,
+                    tool_calls=(
+                        ToolCall(
+                            id="call-a",
+                            name="read_file",
+                            arguments={"path": "a.txt"},
+                        ),
+                    ),
+                ),
+                Message(
+                    role=MessageRole.ASSISTANT,
+                    tool_calls=(
+                        ToolCall(
+                            id="call-b",
+                            name="read_file",
+                            arguments={"path": "b.txt"},
+                        ),
+                    ),
+                ),
+                Message(role=MessageRole.ASSISTANT, content="Done."),
+            ]
+        )
+        events = []
+        runner = AgentRunner(
+            client,
+            self.registry,
+            max_context_characters=1_200,
+            trace_sink=events.append,
+        )
+
+        result = runner.run("Read both files", system_prompt="Be concise.")
+
+        third_context = client.calls[2][0]
+        requested_ids = {
+            call.id
+            for message in third_context
+            for call in message.tool_calls
+        }
+        for message in third_context:
+            if message.role is MessageRole.TOOL:
+                self.assertIn(message.tool_call_id, requested_ids)
+        latest_tool = next(
+            message
+            for message in third_context
+            if message.role is MessageRole.TOOL
+            and message.tool_call_id == "call-b"
+        )
+        self.assertEqual(json.loads(latest_tool.content or "")["output"], "B" * 850)
+        self.assertEqual(len(result.history), 7)
+        audit_outputs = [
+            json.loads(message.content or "")["output"]
+            for message in result.history
+            if message.role is MessageRole.TOOL
+        ]
+        self.assertEqual(audit_outputs, ["A" * 850, "B" * 850])
+        trimmed = [
+            event
+            for event in events
+            if event.kind is AgentTraceKind.CONTEXT_TRIMMED
+        ]
+        self.assertEqual(len(trimmed), 1)
+        self.assertGreater(trimmed[0].omitted_messages or 0, 0)
+        self.assertLessEqual(trimmed[0].context_characters or 0, 1_200)
+
+    def test_rejects_protected_prompts_larger_than_context_budget(self) -> None:
+        runner = AgentRunner(
+            ScriptedClient([]),
+            self.registry,
+            max_context_characters=1_000,
+        )
+
+        with self.assertRaisesRegex(AgentContextError, "prompts exceed"):
+            runner.run("x" * 2_000, system_prompt="system")
+
+    def test_compacts_one_oversized_recent_tool_exchange_without_orphaning_result(
+        self,
+    ) -> None:
+        original = "large-output-" * 500
+        (self.workspace / "large.txt").write_text(original, encoding="utf-8")
+        client = ScriptedClient(
+            [
+                Message(
+                    role=MessageRole.ASSISTANT,
+                    tool_calls=(
+                        ToolCall(
+                            id="call-large",
+                            name="read_file",
+                            arguments={"path": "large.txt"},
+                        ),
+                    ),
+                ),
+                Message(role=MessageRole.ASSISTANT, content="Handled."),
+            ]
+        )
+        runner = AgentRunner(
+            client,
+            self.registry,
+            max_context_characters=1_000,
+        )
+
+        result = runner.run("Read the large file")
+
+        compact_context = client.calls[1][0]
+        assistant = compact_context[-2]
+        tool_message = compact_context[-1]
+        self.assertEqual(assistant.tool_calls[0].id, "call-large")
+        self.assertEqual(dict(assistant.tool_calls[0].arguments), {})
+        self.assertEqual(tool_message.tool_call_id, "call-large")
+        compact_payload = json.loads(tool_message.content or "")
+        self.assertIn("compacted", compact_payload["output"])
+        audit_payload = json.loads(result.history[-2].content or "")
+        self.assertEqual(audit_payload["output"], original)
+
+    def test_rejects_invalid_context_budget(self) -> None:
+        with self.assertRaisesRegex(ValueError, "at least 1000"):
+            AgentRunner(
+                ScriptedClient([]),
+                self.registry,
+                max_context_characters=999,
+            )
+
+    def test_rejects_invalid_no_progress_threshold(self) -> None:
+        with self.assertRaisesRegex(ValueError, "at least 2"):
+            AgentRunner(
+                ScriptedClient([]),
+                self.registry,
+                max_no_progress_turns=1,
+            )
 
 
 if __name__ == "__main__":

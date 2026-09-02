@@ -1,5 +1,7 @@
 import os
 from pathlib import Path
+import shutil
+import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 
@@ -26,47 +28,74 @@ class RunCommandToolTests(unittest.TestCase):
     def _write_script(self, name: str, source: str) -> None:
         (self.workspace / name).write_text(source, encoding="utf-8")
 
-    def test_runs_in_fixed_workspace_and_captures_both_streams(self) -> None:
-        self._write_script(
-            "inspect.py",
-            "import os, sys\n"
-            "print(os.getcwd())\n"
-            "print('错误流', file=sys.stderr)\n",
+    def _run_sample_tests(self, *, timeout_seconds: int = 30):
+        return self.tool.execute(
+            {
+                "argv": [
+                    "python",
+                    "-m",
+                    "unittest",
+                    "discover",
+                    "-s",
+                    ".",
+                    "-p",
+                    "test_sample.py",
+                    "-v",
+                ],
+                "timeout_seconds": timeout_seconds,
+            }
         )
 
-        result = self.tool.execute({"argv": ["python", "inspect.py"]})
+    def test_runs_in_fixed_workspace_and_captures_both_streams(self) -> None:
+        self._write_script(
+            "test_sample.py",
+            "import os, sys, unittest\n\n"
+            "class SampleTest(unittest.TestCase):\n"
+            "    def test_inspects(self):\n"
+            "        print(os.getcwd())\n"
+            "        print('错误流', file=sys.stderr)\n",
+        )
+
+        result = self._run_sample_tests()
 
         self.assertTrue(result.success)
         self.assertEqual(result.metadata["exit_code"], 0)
         self.assertFalse(result.metadata["timed_out"])
-        self.assertIn(str(self.workspace), result.output)
+        self.assertIn(self.workspace.as_posix(), result.output.replace("\\", "/"))
         self.assertIn("错误流", result.output)
         self.assertIn("stdout:", result.output)
         self.assertIn("stderr:", result.output)
 
     def test_returns_nonzero_exit_with_output(self) -> None:
         self._write_script(
-            "fail.py",
-            "import sys\nprint('before failure')\nprint('bad', file=sys.stderr)\nraise SystemExit(7)\n",
+            "test_sample.py",
+            "import sys, unittest\n\n"
+            "class SampleTest(unittest.TestCase):\n"
+            "    def test_fails(self):\n"
+            "        print('before failure')\n"
+            "        print('bad', file=sys.stderr)\n"
+            "        self.fail('expected failure')\n",
         )
 
-        result = self.tool.execute({"argv": ["python", "fail.py"]})
+        result = self._run_sample_tests()
 
         self.assertFalse(result.success)
         self.assertEqual(result.metadata["kind"], "nonzero_exit")
-        self.assertEqual(result.metadata["exit_code"], 7)
+        self.assertEqual(result.metadata["exit_code"], 1)
         self.assertIn("before failure", result.output)
         self.assertIn("bad", result.output)
 
     def test_terminates_command_after_timeout(self) -> None:
         self._write_script(
-            "slow.py",
-            "import time\nprint('started', flush=True)\ntime.sleep(10)\n",
+            "test_sample.py",
+            "import time, unittest\n\n"
+            "class SampleTest(unittest.TestCase):\n"
+            "    def test_slow(self):\n"
+            "        print('started', flush=True)\n"
+            "        time.sleep(10)\n",
         )
 
-        result = self.tool.execute(
-            {"argv": ["python", "slow.py"], "timeout_seconds": 1}
-        )
+        result = self._run_sample_tests(timeout_seconds=1)
 
         self.assertFalse(result.success)
         self.assertEqual(result.metadata["kind"], "timeout")
@@ -76,15 +105,33 @@ class RunCommandToolTests(unittest.TestCase):
 
     def test_truncates_large_stdout_and_still_keeps_stderr(self) -> None:
         self._write_script(
-            "large.py",
-            "import sys\nprint('x' * 10000)\nprint('important error', file=sys.stderr)\n",
+            "test_sample.py",
+            "import sys, unittest\n\n"
+            "class SampleTest(unittest.TestCase):\n"
+            "    def test_large_output(self):\n"
+            "        print('x' * 10000)\n"
+            "        print('important error', file=sys.stderr)\n",
         )
-        tool = RunCommandTool(self.workspace, max_output_chars=200)
+        tool = RunCommandTool(self.workspace, max_output_chars=300)
 
-        result = tool.execute({"argv": ["python", "large.py"]})
+        result = tool.execute(
+            {
+                "argv": [
+                    "python",
+                    "-m",
+                    "unittest",
+                    "discover",
+                    "-s",
+                    ".",
+                    "-p",
+                    "test_sample.py",
+                    "-v",
+                ]
+            }
+        )
 
         self.assertTrue(result.success)
-        self.assertLessEqual(len(result.output), 200)
+        self.assertLessEqual(len(result.output), 300)
         self.assertTrue(result.metadata["truncated"])
         self.assertTrue(result.metadata["stdout_truncated"])
         self.assertIn("important error", result.output)
@@ -92,14 +139,17 @@ class RunCommandToolTests(unittest.TestCase):
 
     def test_scrubs_secret_environment_variables(self) -> None:
         self._write_script(
-            "environment.py",
-            "import os\nprint(os.environ.get('MODEL_API_KEY', 'missing'))\n",
+            "test_sample.py",
+            "import os, unittest\n\n"
+            "class SampleTest(unittest.TestCase):\n"
+            "    def test_environment(self):\n"
+            "        print(os.environ.get('MODEL_API_KEY', 'missing'))\n",
         )
         previous = os.environ.get("MODEL_API_KEY")
         os.environ["MODEL_API_KEY"] = "must-not-leak"
         self.addCleanup(self._restore_environment, "MODEL_API_KEY", previous)
 
-        result = self.tool.execute({"argv": ["python", "environment.py"]})
+        result = self._run_sample_tests()
 
         self.assertTrue(result.success)
         self.assertIn("missing", result.output)
@@ -125,14 +175,18 @@ class RunCommandToolTests(unittest.TestCase):
         self.assertEqual(inline.metadata["kind"], "command_not_allowed")
         self.assertEqual(pip.metadata["kind"], "command_not_allowed")
 
-    def test_blocks_python_script_outside_workspace(self) -> None:
+    def test_blocks_direct_python_scripts_inside_and_outside_workspace(self) -> None:
         outside = self.workspace.parent / "outside.py"
         outside.write_text("print('outside')", encoding="utf-8")
 
-        result = self.tool.execute({"argv": ["python", "../outside.py"]})
+        inside = self.tool.execute({"argv": ["python", "test_sample.py"]})
+        outside_result = self.tool.execute({"argv": ["python", "../outside.py"]})
 
-        self.assertFalse(result.success)
-        self.assertEqual(result.metadata["kind"], "path_outside_workspace")
+        self.assertFalse(inside.success)
+        self.assertFalse(outside_result.success)
+        self.assertEqual(inside.metadata["kind"], "command_not_allowed")
+        self.assertEqual(outside_result.metadata["kind"], "command_not_allowed")
+        self.assertIn("direct Python scripts", inside.error)
 
     def test_allows_unittest_module(self) -> None:
         result = self.tool.execute(
@@ -147,6 +201,38 @@ class RunCommandToolTests(unittest.TestCase):
 
         self.assertFalse(mutation.success)
         self.assertEqual(mutation.metadata["kind"], "command_not_allowed")
+
+    def test_blocks_git_from_discovering_parent_repository(self) -> None:
+        (self.workspace.parent / ".git").mkdir()
+
+        result = self.tool.execute({"argv": ["git", "status", "--short"]})
+
+        self.assertFalse(result.success)
+        self.assertEqual(
+            result.metadata["kind"],
+            "git_repository_not_at_workspace_root",
+        )
+        self.assertIn("parent repositories are intentionally ignored", result.error)
+
+    def test_allows_read_only_git_at_workspace_repository_root(self) -> None:
+        git = shutil.which("git")
+        if git is None:
+            self.skipTest("git is unavailable")
+        subprocess.run(
+            [git, "init", "--quiet"],
+            cwd=self.workspace,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        result = self.tool.execute(
+            {"argv": ["git", "rev-parse", "--show-toplevel"]}
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.metadata["exit_code"], 0)
+        self.assertIn(self.workspace.as_posix(), result.output.replace("\\", "/"))
 
     def test_validates_timeout_and_arguments(self) -> None:
         invalid_timeout = self.tool.execute(

@@ -151,6 +151,18 @@ def format_trace_event(event: AgentTraceEvent) -> str:
         return f"[Tool] {event.tool_name} {rendered}"
     if event.kind is AgentTraceKind.TOOL_FINISH:
         return f"[Tool] {event.tool_name} {event.summary}"
+    if event.kind is AgentTraceKind.CONTEXT_TRIMMED:
+        return (
+            f"[Turn {event.model_turn}] Context trimmed; "
+            f"affected_messages={event.omitted_messages or 0}, "
+            f"context_characters={event.context_characters or 0}"
+        )
+    if event.kind is AgentTraceKind.NO_PROGRESS:
+        return (
+            f"[Turn {event.model_turn}] Stopped for no progress; "
+            f"repeated_tool_batches={event.repetitions or 0}, "
+            f"tools={event.tool_count or 0}"
+        )
     if event.kind is AgentTraceKind.MODEL_FINAL:
         return f"[Turn {event.model_turn}] Model returned final answer"
     return f"[Trace] {event.kind}"
@@ -238,6 +250,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             client,
             registry,
             max_turns=config.max_turns,
+            max_context_characters=config.max_context_chars,
+            max_no_progress_turns=config.max_no_progress_turns,
             trace_sink=print_trace_event if args.verbose else None,
         )
         result = runner.run(prompt, system_prompt=args.system)

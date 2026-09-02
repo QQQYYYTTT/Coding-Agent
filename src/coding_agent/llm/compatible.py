@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Callable, Mapping, Sequence, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -18,7 +19,9 @@ from coding_agent.messages import Message, MessageRole, ToolCall
 
 
 JsonObject = Mapping[str, Any]
-Transport = Callable[[str, JsonObject, Mapping[str, str], float], JsonObject]
+Transport = Callable[
+    [str, JsonObject, Mapping[str, str], float, int], JsonObject
+]
 
 
 def _provider_error_message(body: bytes, fallback: str) -> str:
@@ -39,8 +42,9 @@ def _http_post_json(
     payload: JsonObject,
     headers: Mapping[str, str],
     timeout: float,
+    max_response_bytes: int,
 ) -> JsonObject:
-    """POST JSON with the standard library so the core has no SDK dependency."""
+    """POST JSON while bounding memory used by provider responses."""
 
     request = Request(
         url,
@@ -51,15 +55,29 @@ def _http_post_json(
 
     try:
         with urlopen(request, timeout=timeout) as response:
-            body = response.read()
+            body = response.read(max_response_bytes + 1)
+            if len(body) > max_response_bytes:
+                raise ModelResponseError(
+                    f"model API response exceeded {max_response_bytes} bytes"
+                )
     except HTTPError as exc:
-        body = exc.read()
+        body = exc.read(max_response_bytes + 1)
         detail = _provider_error_message(body, exc.reason or "HTTP request failed")
-        raise ModelRequestError(f"model API returned HTTP {exc.code}: {detail}") from exc
+        retryable = exc.code in {408, 409, 429} or 500 <= exc.code <= 599
+        raise ModelRequestError(
+            f"model API returned HTTP {exc.code}: {detail}",
+            retryable=retryable,
+        ) from exc
     except URLError as exc:
-        raise ModelRequestError(f"could not reach model API: {exc.reason}") from exc
+        raise ModelRequestError(
+            f"could not reach model API: {exc.reason}",
+            retryable=True,
+        ) from exc
     except TimeoutError as exc:
-        raise ModelRequestError("model API request timed out") from exc
+        raise ModelRequestError(
+            "model API request timed out",
+            retryable=True,
+        ) from exc
 
     try:
         decoded = json.loads(body.decode("utf-8"))
@@ -126,9 +144,11 @@ class OpenAICompatibleClient(LLMClient):
         config: AppConfig,
         *,
         transport: Transport | None = None,
+        sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         self._config = config
         self._transport = transport or _http_post_json
+        self._sleeper = sleeper
 
     def complete(
         self,
@@ -151,13 +171,22 @@ class OpenAICompatibleClient(LLMClient):
             "Content-Type": "application/json",
             "User-Agent": "nju-coding-agent/0.1.0",
         }
-        response = self._transport(
-            f"{self._config.base_url}/chat/completions",
-            request_payload,
-            headers,
-            self._config.request_timeout,
-        )
-        return self._parse_response(response)
+        retries = 0
+        while True:
+            try:
+                response = self._transport(
+                    f"{self._config.base_url}/chat/completions",
+                    request_payload,
+                    headers,
+                    self._config.request_timeout,
+                    self._config.max_model_response_bytes,
+                )
+                return self._parse_response(response)
+            except ModelRequestError as exc:
+                if not exc.retryable or retries >= self._config.max_retries:
+                    raise
+                self._sleeper(min(0.5 * (2 ** retries), 4.0))
+                retries += 1
 
     @staticmethod
     def _parse_response(response: JsonObject) -> Message:

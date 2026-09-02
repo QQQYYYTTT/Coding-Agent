@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 from typing import Mapping
+from urllib.parse import urlsplit
 
 
 class ConfigurationError(ValueError):
@@ -78,6 +79,21 @@ def _positive_int(environ: Mapping[str, str], name: str, default: int) -> int:
     return value
 
 
+def _non_negative_int(
+    environ: Mapping[str, str],
+    name: str,
+    default: int,
+) -> int:
+    raw_value = environ.get(name, str(default)).strip()
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ConfigurationError(f"{name} must be an integer") from exc
+    if value < 0:
+        raise ConfigurationError(f"{name} must be zero or greater")
+    return value
+
+
 def _positive_float(environ: Mapping[str, str], name: str, default: float) -> float:
     raw_value = environ.get(name, str(default)).strip()
     try:
@@ -102,7 +118,11 @@ class AppConfig:
     base_url: str
     model: str
     request_timeout: float = 60.0
+    max_retries: int = 2
+    max_model_response_bytes: int = 2_000_000
     max_turns: int = 20
+    max_context_chars: int = 100_000
+    max_no_progress_turns: int = 3
     command_timeout: int = 60
     max_tool_output: int = 20_000
 
@@ -113,20 +133,68 @@ class AppConfig:
             raise ConfigurationError("base_url must not be empty")
         if not self.model.strip():
             raise ConfigurationError("model must not be empty")
-        if not self.base_url.startswith(("https://", "http://")):
-            raise ConfigurationError("base_url must start with http:// or https://")
+        parsed_url = urlsplit(self.base_url)
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname:
+            raise ConfigurationError("base_url must be an absolute HTTP(S) URL")
+        if parsed_url.username is not None or parsed_url.password is not None:
+            raise ConfigurationError("base_url must not contain credentials")
+        if parsed_url.query or parsed_url.fragment:
+            raise ConfigurationError("base_url must not contain a query or fragment")
+        try:
+            parsed_url.port
+        except ValueError as exc:
+            raise ConfigurationError("base_url contains an invalid port") from exc
+        if (
+            parsed_url.scheme != "https"
+            and parsed_url.hostname.lower() not in {"localhost", "127.0.0.1", "::1"}
+        ):
+            raise ConfigurationError(
+                "base_url must use HTTPS unless it targets a loopback host"
+            )
         if self.request_timeout <= 0:
             raise ConfigurationError("request_timeout must be greater than zero")
+        if (
+            not isinstance(self.max_retries, int)
+            or isinstance(self.max_retries, bool)
+            or not 0 <= self.max_retries <= 5
+        ):
+            raise ConfigurationError("max_retries must be an integer from 0 to 5")
+        if (
+            not isinstance(self.max_model_response_bytes, int)
+            or isinstance(self.max_model_response_bytes, bool)
+            or not 1_024 <= self.max_model_response_bytes <= 10_000_000
+        ):
+            raise ConfigurationError(
+                "max_model_response_bytes must be an integer from 1024 to 10000000"
+            )
         if self.max_turns <= 0:
             raise ConfigurationError("max_turns must be greater than zero")
+        if (
+            not isinstance(self.max_context_chars, int)
+            or isinstance(self.max_context_chars, bool)
+            or self.max_context_chars < 1_000
+        ):
+            raise ConfigurationError("max_context_chars must be an integer of at least 1000")
+        if (
+            not isinstance(self.max_no_progress_turns, int)
+            or isinstance(self.max_no_progress_turns, bool)
+            or self.max_no_progress_turns < 2
+        ):
+            raise ConfigurationError(
+                "max_no_progress_turns must be an integer of at least 2"
+            )
         if (
             not isinstance(self.command_timeout, int)
             or isinstance(self.command_timeout, bool)
             or not 1 <= self.command_timeout <= 60
         ):
             raise ConfigurationError("command_timeout must be an integer from 1 to 60")
-        if self.max_tool_output <= 0:
-            raise ConfigurationError("max_tool_output must be greater than zero")
+        if (
+            not isinstance(self.max_tool_output, int)
+            or isinstance(self.max_tool_output, bool)
+            or self.max_tool_output < 100
+        ):
+            raise ConfigurationError("max_tool_output must be an integer of at least 100")
 
         object.__setattr__(self, "base_url", self.base_url.rstrip("/"))
 
@@ -167,7 +235,23 @@ class AppConfig:
             ).strip(),
             model=_required(source, "MODEL_NAME"),
             request_timeout=_positive_float(source, "MODEL_TIMEOUT", 60.0),
+            max_retries=_non_negative_int(source, "MODEL_MAX_RETRIES", 2),
+            max_model_response_bytes=_positive_int(
+                source,
+                "MODEL_MAX_RESPONSE_BYTES",
+                2_000_000,
+            ),
             max_turns=_positive_int(source, "AGENT_MAX_TURNS", 20),
+            max_context_chars=_positive_int(
+                source,
+                "MAX_CONTEXT_CHARS",
+                100_000,
+            ),
+            max_no_progress_turns=_positive_int(
+                source,
+                "MAX_NO_PROGRESS_TURNS",
+                3,
+            ),
             command_timeout=_positive_int(source, "COMMAND_TIMEOUT", 60),
             max_tool_output=_positive_int(source, "MAX_TOOL_OUTPUT", 20_000),
         )

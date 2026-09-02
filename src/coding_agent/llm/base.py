@@ -17,6 +17,10 @@ class ModelClientError(RuntimeError):
 class ModelRequestError(ModelClientError):
     """Raised when the model request could not be completed."""
 
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
 
 class ModelResponseError(ModelClientError):
     """Raised when a provider returns an unusable response."""
