@@ -89,19 +89,19 @@ COMMAND_TIMEOUT=60
 MAX_TOOL_OUTPUT=20000
 ```
 
-| 配置项 | 默认值 | 说明 |
-| --- | ---: | --- |
-| `MODEL_API_KEY` | 无 | 必填；也可以使用 `OPENAI_API_KEY` |
-| `MODEL_BASE_URL` | `https://api.openai.com/v1` | 远程地址必须使用 HTTPS；HTTP 仅允许本机回环地址 |
-| `MODEL_NAME` | 无 | 必填；模型必须支持 tool calling |
-| `MODEL_TIMEOUT` | `60` | 单次模型请求超时秒数，必须大于 0 |
-| `MODEL_MAX_RETRIES` | `2` | 瞬时错误的额外重试次数，范围 0～5 |
-| `MODEL_MAX_RESPONSE_BYTES` | `2000000` | 模型响应大小上限，范围 1024～10000000 字节 |
-| `AGENT_MAX_TURNS` | `20` | 单次任务允许的最大模型轮数 |
-| `MAX_CONTEXT_CHARS` | `100000` | 发送给模型的上下文字符预算，最小 1000 |
-| `MAX_NO_PROGRESS_TURNS` | `3` | 相同工具调用和结果连续重复多少轮后停止，最小 2 |
-| `COMMAND_TIMEOUT` | `60` | 命令默认及最大超时，范围 1～60 秒 |
-| `MAX_TOOL_OUTPUT` | `20000` | 单个工具返回给模型的字符上限，最小 100 |
+| 配置项                       |                        默认值 | 说明                                            |
+| ---------------------------- | ----------------------------: | ----------------------------------------------- |
+| `MODEL_API_KEY`            |                            无 | 必填；也可以使用`OPENAI_API_KEY`              |
+| `MODEL_BASE_URL`           | `https://api.openai.com/v1` | 远程地址必须使用 HTTPS；HTTP 仅允许本机回环地址 |
+| `MODEL_NAME`               |                            无 | 必填；模型必须支持 tool calling                 |
+| `MODEL_TIMEOUT`            |                        `60` | 单次模型请求超时秒数，必须大于 0                |
+| `MODEL_MAX_RETRIES`        |                         `2` | 瞬时错误的额外重试次数，范围 0～5               |
+| `MODEL_MAX_RESPONSE_BYTES` |                   `2000000` | 模型响应大小上限，范围 1024～10000000 字节      |
+| `AGENT_MAX_TURNS`          |                        `20` | 单次任务允许的最大模型轮数                      |
+| `MAX_CONTEXT_CHARS`        |                    `100000` | 发送给模型的上下文字符预算，最小 1000           |
+| `MAX_NO_PROGRESS_TURNS`    |                         `3` | 相同工具调用和结果连续重复多少轮后停止，最小 2  |
+| `COMMAND_TIMEOUT`          |                        `60` | 命令默认及最大超时，范围 1～60 秒               |
+| `MAX_TOOL_OUTPUT`          |                     `20000` | 单个工具返回给模型的字符上限，最小 100          |
 
 进程环境变量优先于 `.env`。真实 API Key 只能保存在进程环境变量或未入库的 `.env` 中；不要写入源码、README、`.env.example` 或 Git 历史。
 
@@ -153,13 +153,13 @@ usage: coding-agent [-h] [--workspace WORKSPACE] [--system SYSTEM] [--verbose] [
 
 ## 工具与安全边界
 
-| 工具 | 用途 | 主要限制 |
-| --- | --- | --- |
-| `list_files` | 查看目录结构 | 限制递归深度、条目数和输出大小，隐藏敏感路径 |
-| `read_file` | 读取 UTF-8 文本 | 禁止目录穿越、工作区逃逸、敏感文件和二进制文件 |
-| `write_file` | 创建新文件 | 默认禁止覆盖，父目录必须已存在 |
-| `replace_text` | 精确修改文件 | 旧文本必须恰好出现一次，使用原子替换 |
-| `run_command` | 运行测试和只读检查 | 固定工作目录、命令白名单、超时、退出码和双流截断 |
+| 工具             | 用途               | 主要限制                                         |
+| ---------------- | ------------------ | ------------------------------------------------ |
+| `list_files`   | 查看目录结构       | 限制递归深度、条目数和输出大小，隐藏敏感路径     |
+| `read_file`    | 读取 UTF-8 文本    | 禁止目录穿越、工作区逃逸、敏感文件和二进制文件   |
+| `write_file`   | 创建新文件         | 默认禁止覆盖，父目录必须已存在                   |
+| `replace_text` | 精确修改文件       | 旧文本必须恰好出现一次，使用原子替换             |
+| `run_command`  | 运行测试和只读检查 | 固定工作目录、命令白名单、超时、退出码和双流截断 |
 
 `run_command` 不提供任意 Shell：
 
@@ -224,7 +224,3 @@ python -m unittest discover -s tests -v
 │   └── buggy_shipping/
 └── tests/
 ```
-
-## 设计范围
-
-本项目刻意保持最小实现，不使用通用 Agent 框架，也不追求多智能体、长期记忆、向量数据库或任意命令执行。其目标是让考核者可以直接阅读并解释每一次模型决策、工具调用、安全检查和验证过程。
